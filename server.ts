@@ -1,114 +1,81 @@
+
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import dotenv from "dotenv";
-import admin from "firebase-admin";
+import { initializeApp, cert, getApps } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
 
-dotenv.config();
+// Initialize Firebase Admin
+// Note: In this environment, we might need to rely on environment variables 
+// or the provided config. For now, we'll try to initialize with the project ID.
+import firebaseConfig from "./firebase-applet-config.json";
 
-const app = express();
-const PORT = 3000;
-
-// Initialize Firebase Admin for secure server-side operations
-try {
-  if (!admin.apps.length) {
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-    
-    if (serviceAccountJson) {
-      const serviceAccount = JSON.parse(serviceAccountJson);
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-        projectId: process.env.VITE_FIREBASE_PROJECT_ID || serviceAccount.project_id
-      });
-    } else {
-      admin.initializeApp({
-        projectId: process.env.VITE_FIREBASE_PROJECT_ID
-      });
-    }
-  }
-} catch (err) {
-  console.warn("Firebase Admin Initialization Warning:", err);
+if (!getApps().length) {
+  initializeApp({
+    projectId: firebaseConfig.projectId
+  });
 }
 
-const dbAdmin = admin.apps.length ? admin.firestore() : null;
+const db = getFirestore();
 
-app.use(express.json());
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
 
-// API Route to proxy Apps Script requests
-app.all("/api/sheets-sync", async (req, res) => {
-  // Explicitly handle method to avoid 405 on some platforms if they probe
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed", message: "Use POST to sync leads." });
-  }
+  app.use(express.json());
 
-  try {
-    const { clientId, data } = req.body;
-    
-    if (!clientId) {
-      console.error("Sync Error: Missing clientId in request body");
-      return res.status(400).json({ error: "Missing clientId" });
-    }
-
-    let sheetUrl = req.body.sheetUrl;
-
-    if (!sheetUrl && dbAdmin) {
-      try {
-        const clientDoc = await dbAdmin.collection("clients").doc(clientId).get();
-        if (clientDoc.exists) {
-          sheetUrl = clientDoc.get("sheetUrl");
-        }
-      } catch (dbErr) {
-        console.error("Firestore Admin Lookup Error:", dbErr);
-      }
-    }
-
-    if (!sheetUrl) {
-      console.warn(`Sync Warning: No sheetUrl found for clientId: ${clientId}`);
-      return res.status(200).json({ 
-        success: true, 
-        warning: "Sheet URL not configured, leads saved to Firestore only."
-      });
-    }
-
-    console.log(`Syncing lead to: ${sheetUrl}`);
-    const response = await fetch(sheetUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
-
-    const contentType = response.headers.get("content-type");
-    let result: any = { status: "success" };
-    
+  // API Route for Google Sheets Sync
+  app.post("/api/sheets-sync", async (req, res) => {
     try {
-      if (contentType && contentType.includes("application/json")) {
-        result = await response.json();
+      const leadData = req.body;
+      
+      // 1. Fetch sheetUrl from clients collection
+      // Usually, there might be a single config doc in a clients or settings collection
+      const clientSnap = await db.collection("clients").doc("main_config").get();
+      let sheetUrl = "";
+      
+      if (clientSnap.exists) {
+        sheetUrl = clientSnap.data()?.sheetUrl || "";
       } else {
-        const text = await response.text();
-        result = { status: "success", message: text };
+        // Fallback or check if there's any doc with sheetUrl
+        const clientsQuery = await db.collection("clients").limit(1).get();
+        if (!clientsQuery.empty) {
+          sheetUrl = clientsQuery.docs[0].data()?.sheetUrl || "";
+        }
       }
-    } catch (parseErr) {
-      console.warn("Apps Script parsing warning:", parseErr);
+
+      if (!sheetUrl) {
+        console.warn("No sheetUrl found in clients collection");
+        return res.json({ success: true, message: "No sheetUrl configured, but lead saved to DB" });
+      }
+
+      // 2. Send to Google Apps Script
+      // We expect sheetUrl to be the Web App URL of the Apps Script
+      try {
+        const response = await fetch(sheetUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(leadData),
+        });
+
+        // 3. Response handling (Non-blocking as requested)
+        const result = await response.text();
+        console.log("Sheets Sync Response:", result);
+      } catch (e) {
+        console.error("Fetch to sheets GAS failed:", e);
+      }
+
+      return res.json({ success: true, message: "Sync attempt completed" });
+    } catch (error) {
+      console.error("Sheet Sync Error:", error);
+      // Always return valid JSON even on error
+      return res.json({ success: true, error: "Sync failed but lead saved" });
     }
+  });
 
-    if (!response.ok) {
-      console.error(`Apps Script Sync Failure: ${response.status}`);
-      return res.status(response.status).json({ error: "Apps Script error", details: result });
-    }
-
-    return res.json({ success: true, ...result });
-  } catch (err: any) {
-    console.error("System Sync Error:", err);
-    return res.status(200).json({ 
-      success: true, 
-      warning: "Firestore saved, but sheet sync failed.",
-      details: err.message 
-    });
-  }
-});
-
-// Setup Vite or Static Serving
-async function setupServer() {
+  // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -119,20 +86,13 @@ async function setupServer() {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
-      if (!req.path.startsWith("/api")) {
-        res.sendFile(path.join(distPath, "index.html"));
-      }
+      res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
-  // Start listener if not in serverless environment
-  if (!process.env.VERCEL && !process.env.AWS_EXECUTION_ENV) {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  }
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
 }
 
-setupServer();
-
-export default app;
+startServer();

@@ -1,408 +1,209 @@
-"use client";
+import { useParams, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { doc, getDoc, updateDoc, collection, getDocs, onSnapshot } from "firebase/firestore";
+import { db } from "../lib/firebase";
+import { useAuth } from "../contexts/AuthContext";
+import { motion, AnimatePresence } from "motion/react";
+import { Phone, MessageCircle, Mail, Calendar, ArrowLeft, CheckCircle2, UserCircle, MapPin, Tag, Smartphone, MessageSquare, ChevronDown } from "lucide-react";
+import { format } from "date-fns";
+import AfterCallModal from "../components/AfterCallModal";
+import Modal from "../components/Modal";
 
-import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
-import { useFirebase } from '../lib/FirebaseProvider';
-import { Lead, LeadStatus } from '../types';
-import { 
-  ArrowLeft, 
-  Phone, 
-  Mail, 
-  Calendar, 
-  Clock, 
-  CheckCircle2, 
-  MessageSquare,
-  History,
-  User,
-  Shield,
-  MapPin,
-  CircleDollarSign,
-  ChevronRight,
-  Send,
-  AlertCircle,
-  XCircle,
-  PauseCircle,
-  ExternalLink
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { cn, getStatusColor, formatDate } from '../lib/utils';
-
-const STATUS_OPTIONS: LeadStatus[] = ['new', 'contacted', 'site_visit', 'meeting', 'closed', 'inactive'];
-
-export default function LeadDetail() {
-  const { id } = useParams<{ id: string }>();
+export default function LeadDetails() {
+  const { id } = useParams();
   const navigate = useNavigate();
-  const { user, client } = useFirebase();
-  const [lead, setLead] = useState<Lead | null>(null);
+  const { user, role } = useAuth();
+  const [lead, setLead] = useState<any>(null);
+  const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState(false);
-  const [showUpdateModal, setShowUpdateModal] = useState(false);
-  const [newNote, setNewNote] = useState('');
-
-  // Update State for Modal
-  const [updateForm, setUpdateForm] = useState({
-    status: '' as LeadStatus,
-    nextFollowUp: '',
-    budget: '',
-    location: '',
-    propertyType: '',
-    remark: ''
-  });
+  const [isAfterCallOpen, setIsAfterCallOpen] = useState(false);
+  const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
 
   useEffect(() => {
-    if (id) fetchLead();
-  }, [id]);
-
-  const fetchLead = async () => {
     if (!id) return;
-    try {
-      const docSnap = await getDoc(doc(db, 'leads', id));
-      if (docSnap.exists()) {
-        const data = docSnap.id ? { id: docSnap.id, ...docSnap.data() } as Lead : null;
-        setLead(data);
-        if (data) {
-          setUpdateForm({
-            status: data.status,
-            nextFollowUp: data.nextFollowUp || data.followUpDate || '',
-            budget: data.budget || '',
-            location: data.location || '',
-            propertyType: data.propertyType || '',
-            remark: data.remark || ''
-          });
-        }
+    const unsubscribe = onSnapshot(doc(db, "leads", id), (snap) => {
+      if (snap.exists()) {
+        setLead({ id: snap.id, ...snap.data() });
       }
-    } catch (err) {
-      console.error("Error fetching lead:", err);
-    } finally {
       setLoading(false);
-    }
-  };
+    });
 
-  const updateLead = async (updates: Partial<Lead>, historyMessage?: string) => {
-    if (!id || !lead) return;
-    setUpdating(true);
-    try {
-      const timestamp = new Date().toISOString();
-      const updatedHistory = [...(lead.history || [])];
-      
-      if (historyMessage) {
-        updatedHistory.push({
-          text: historyMessage,
-          timestamp,
-          author: user?.email || 'System'
-        });
+    const fetchAgents = async () => {
+      if (role === "admin") {
+        const snap = await getDocs(collection(db, "users"));
+        setAgents(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       }
+    };
 
-      const finalUpdates = {
-        ...updates,
-        history: updatedHistory,
-        lastUpdated: timestamp
-      };
+    fetchAgents();
+    return unsubscribe;
+  }, [id, role]);
 
-      await updateDoc(doc(db, 'leads', id), finalUpdates);
-      setLead(prev => prev ? { ...prev, ...finalUpdates } : null);
-      return true;
-    } catch (err) {
-      console.error("Update Error:", err);
-      return false;
-    } finally {
-      setUpdating(false);
-    }
+  const updateStatus = async (newStatus: string) => {
+    if (!id) return;
+    await updateDoc(doc(db, "leads", id), { status: newStatus });
+    setIsStatusModalOpen(false);
   };
 
-  const handleApplyCallUpdate = async () => {
-    const success = await updateLead(
-      {
-        status: updateForm.status as LeadStatus,
-        nextFollowUp: updateForm.nextFollowUp || null,
-        budget: updateForm.budget,
-        location: updateForm.location,
-        propertyType: updateForm.propertyType,
-        remark: updateForm.remark,
-      },
-      `Updated after call - New Status: ${updateForm.status}`
-    );
-    if (success) setShowUpdateModal(false);
+  const assignAgent = async (agentId: string) => {
+    if (!id) return;
+    await updateDoc(doc(db, "leads", id), { assignedTo: agentId });
   };
 
-  const handleAddNote = async () => {
-    if (!newNote.trim()) return;
-    await updateLead({}, `Add Note: ${newNote}`);
-    setNewNote('');
-  };
+  if (loading) return <div className="p-10 text-center font-sans">Loading...</div>;
+  if (!lead) return <div className="p-10 text-center font-sans">Lead not found</div>;
 
-  if (loading) return (
-    <div className="flex h-screen items-center justify-center bg-gray-50">
-      <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-    </div>
-  );
+  const isOverdue = lead?.followUpDate ? (new Date(lead.followUpDate) < new Date() && lead.status !== "closed" && lead.status !== "lost") : false;
 
-  if (!lead) return (
-    <div className="text-center py-20 px-8">
-      <AlertCircle size={48} className="mx-auto text-gray-300 mb-4" />
-      <p className="text-gray-500 font-bold">Lead record not found</p>
-      <button onClick={() => navigate('/leads')} className="text-blue-600 font-bold mt-4 hover:underline">Return to List</button>
-    </div>
-  );
+  const statusOptions = [
+    { label: "New Lead", value: "new" },
+    { label: "Contacted", value: "contacted" },
+    { label: "Site Visit Scheduled", value: "site_visit" },
+    { label: "Meeting Scheduled", value: "meeting" },
+    { label: "Closed Won", value: "closed" },
+    { label: "Inactive", value: "inactive" },
+  ];
 
   return (
-    <div className="flex flex-col gap-6 pb-12 max-w-4xl mx-auto">
-      {/* Navigation Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+    <div className="p-6 pb-24 font-sans max-w-md mx-auto">
+      <header className="flex items-center gap-4 mb-8">
+        <button onClick={() => navigate(-1)} className="p-2 hover:bg-white rounded-xl transition-colors">
+          <ArrowLeft size={24} />
+        </button>
+        <h2 className="text-xl font-bold text-neutral-900">Lead Profile</h2>
+      </header>
+
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-white rounded-[2.5rem] p-8 border border-neutral-100 shadow-xl shadow-neutral-100 mb-8 text-center relative overflow-hidden"
+      >
+        <div className="absolute top-0 right-0 p-6">
+          <span className={`text-[10px] font-black uppercase tracking-[0.2em] px-3 py-1 rounded-full ${
+            lead.status === 'closed' ? 'bg-emerald-500 text-white' :
+            lead.status === 'inactive' ? 'bg-neutral-100 text-neutral-400' :
+            lead.status === 'site_visit' || lead.status === 'meeting' ? 'bg-orange-50 text-orange-600' :
+            'bg-emerald-50 text-emerald-600'
+          }`}>
+            {(lead.status || 'new').replace('_', ' ')}
+          </span>
+        </div>
+
+        <div className="w-24 h-24 bg-emerald-50 text-emerald-500 rounded-[2rem] flex items-center justify-center text-4xl font-extrabold mx-auto mb-6 shadow-inner">
+          {(lead.firstName || "?")[0]}
+        </div>
+        <h3 className="text-2xl font-black text-neutral-900 mb-1">{lead.firstName || "Unknown"} {lead.lastName || ""}</h3>
+        <p className="text-neutral-400 font-bold mb-8 uppercase tracking-widest text-[10px]">{lead.propertyType || "N/A"} • {lead.budget || "N/A"}</p>
+
+        <div className="grid grid-cols-4 gap-4">
+          <ContactButton icon={Phone} color="bg-emerald-500" href={`tel:${lead.phone}`} />
+          <ContactButton icon={MessageCircle} color="bg-green-400" href={`https://wa.me/${lead.phone}`} />
+          <ContactButton icon={Smartphone} color="bg-blue-400" href={`sms:${lead.phone}`} />
+          <ContactButton icon={Mail} color="bg-neutral-400" href={`mailto:${lead.email}`} />
+        </div>
+      </motion.div>
+
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-3 mb-6">
           <button 
-            onClick={() => navigate(-1)}
-            className="w-10 h-10 flex items-center justify-center bg-white rounded-xl shadow-sm border border-gray-100 hover:border-blue-200 transition-all active:scale-95"
+            onClick={() => setIsAfterCallOpen(true)}
+            className="w-full bg-neutral-900 text-white py-5 rounded-[2rem] font-bold flex items-center justify-center gap-3 shadow-xl active:scale-[0.98] transition-all"
           >
-            <ArrowLeft size={18} />
+            <MessageSquare size={18} />
+            Update After Call
           </button>
-          <div className="flex flex-col">
-            <h1 className="text-xl font-black text-gray-900 tracking-tight">{lead.firstName} {lead.lastName}</h1>
-            <div className="flex items-center gap-2">
-              <span className={cn("px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider", getStatusColor(lead.status))}>
-                {lead.status}
-              </span>
-              <span className="text-[10px] text-gray-400 font-bold uppercase">{lead.phone}</span>
-            </div>
-          </div>
+          <button 
+            onClick={() => setIsStatusModalOpen(true)}
+            className="w-full bg-white border-2 border-emerald-500 text-emerald-500 py-5 rounded-[2rem] font-bold flex items-center justify-center gap-3 active:scale-[0.98] transition-all"
+          >
+            <CheckCircle2 size={18} />
+            Mark Done
+          </button>
         </div>
-        <div className="flex items-center gap-2">
-           <button 
-             onClick={() => setShowUpdateModal(true)}
-             className="px-4 py-2.5 bg-gray-900 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-black transition-all active:scale-95"
-           >
-             Update Call
-           </button>
-           <a href={`tel:${lead.phone}`} className="w-10 h-10 flex items-center justify-center bg-white rounded-xl border border-gray-100 text-blue-600 hover:bg-blue-50 transition-colors">
-              <Phone size={18} />
-           </a>
-           <a href={`https://wa.me/${lead.phone.replace(/\D/g,'')}`} target="_blank" rel="noreferrer" className="w-10 h-10 flex items-center justify-center bg-white rounded-xl border border-gray-100 text-emerald-600 hover:bg-emerald-50 transition-colors">
-              <MessageSquare size={18} />
-           </a>
+
+        <div className="bg-white p-6 rounded-[2rem] border border-neutral-100 space-y-6">
+          <InfoRow 
+            icon={Calendar} 
+            label="Next Follow-up" 
+            value={lead?.followUpDate && !isNaN(new Date(lead.followUpDate).getTime()) ? format(new Date(lead.followUpDate), "PPP") : "TBD"} 
+            color={isOverdue ? "text-rose-500" : "text-emerald-500"} 
+          />
+          <InfoRow icon={MapPin} label="Location" value={lead.location || "Not specified"} />
+          <InfoRow icon={Tag} label="Source" value={lead.source || "Organic"} />
+          <InfoRow icon={UserCircle} label="Assigned Agent" value={agents.find(a => a.id === lead.assignedTo)?.name || "Not assigned"} />
         </div>
-      </div>
 
-      <div className="grid lg:grid-cols-5 gap-8">
-        {/* Basic Details */}
-        <div className="lg:col-span-3 flex flex-col gap-6">
-          <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
-            <div className="p-6 grid grid-cols-2 gap-y-6 gap-x-4">
-              <DetailItem icon={MapPin} label="Location" value={lead.location || 'Not set'} color="text-red-500" />
-              <DetailItem icon={Shield} label="Property Type" value={lead.propertyType} color="text-blue-500" />
-              <DetailItem icon={CircleDollarSign} label="Budget" value={lead.budget} color="text-emerald-500" />
-              <DetailItem icon={History} label="Created At" value={formatDate(lead.createdAt)} color="text-gray-400" />
-            </div>
-          </div>
-
-          {/* Follow-up Section */}
-          <div className="bg-blue-600 rounded-3xl p-6 text-white shadow-lg shadow-blue-100 relative overflow-hidden">
-            <div className="relative z-10">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                   <Clock size={20} />
-                   <h3 className="font-bold">Next Action Window</h3>
-                </div>
-                <button 
-                  onClick={() => setShowUpdateModal(true)}
-                  className="bg-white/10 hover:bg-white/20 p-2 rounded-xl transition-colors"
-                >
-                  <Calendar size={18} />
-                </button>
-              </div>
-
-              {(lead.nextFollowUp || lead.followUpDate) ? (
-                <div>
-                  <p className="text-2xl font-black">{new Date(lead.nextFollowUp || lead.followUpDate!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                  <p className="text-sm font-bold opacity-80">{new Date(lead.nextFollowUp || lead.followUpDate!).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</p>
-                </div>
-              ) : (
-                <p className="text-sm font-medium opacity-70">No future follow-up scheduled</p>
-              )}
-            </div>
-          </div>
-
-          {/* Assignment Section */}
-          <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-purple-50 flex items-center justify-center text-purple-600">
-                <User size={20} />
-              </div>
-              <div>
-                <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Ownership</p>
-                <p className="text-sm font-bold text-gray-900">{lead.assignedTo || 'Unassigned'}</p>
-              </div>
-            </div>
-            {user?.email && lead.assignedTo !== user.email && (
-              <button 
-                onClick={() => updateLead({ assignedTo: user.email! }, `Assigned lead to ${user.email}`)}
-                className="px-4 py-2 bg-purple-600 text-white rounded-xl text-xs font-bold hover:bg-purple-700 transition-colors"
+        {role === "admin" && (
+          <div className="bg-white p-8 rounded-[2rem] border border-neutral-100">
+            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-400 mb-4 ml-1">Reassign Agent</h4>
+            <div className="relative">
+              <select 
+                value={lead.assignedTo || ""} 
+                onChange={(e) => assignAgent(e.target.value)}
+                className="w-full bg-neutral-50 border-none rounded-2xl p-4 font-bold outline-none text-neutral-700 appearance-none"
               >
-                Claim Lead
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Notes & History */}
-        <div className="lg:col-span-2 flex flex-col gap-6">
-          <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm flex flex-col gap-4">
-             <div className="flex items-center gap-2 text-gray-900 font-bold text-sm">
-                <MessageSquare size={16} className="text-blue-600" />
-                Case Notes
-             </div>
-             <div className="relative">
-               <textarea
-                 rows={3}
-                 value={newNote}
-                 onChange={(e) => setNewNote(e.target.value)}
-                 placeholder="Log your conversation summary..."
-                 className="w-full bg-gray-50 rounded-2xl p-4 text-sm focus:ring-2 focus:ring-blue-100 border-none transition-all resize-none placeholder:text-gray-300"
-               />
-               <button 
-                 disabled={!newNote.trim() || updating}
-                 onClick={handleAddNote}
-                 className="absolute bottom-3 right-3 w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-100 active:scale-90 transition-all disabled:opacity-30"
-               >
-                 <Send size={14} />
-               </button>
-             </div>
-          </div>
-
-          <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm flex-1">
-             <h3 className="font-bold text-sm text-gray-900 mb-6 flex items-center gap-2">
-                <History size={16} className="text-gray-400" />
-                History Timeline
-             </h3>
-             <div className="space-y-6 relative before:absolute before:left-2 before:top-2 before:bottom-2 before:w-px before:bg-gray-100">
-                {lead.history?.slice().reverse().map((entry, idx) => (
-                  <div key={idx} className="relative pl-7 group">
-                    <div className="absolute left-0 top-1.5 w-4 h-4 rounded-full bg-white border-2 border-blue-500 z-10 group-first:bg-blue-500 transition-colors" />
-                    <div>
-                      <p className="text-xs font-bold text-gray-900">{entry.text}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[10px] text-gray-400 font-medium">{formatDate(entry.timestamp)}</span>
-                        <span className="text-[10px] text-blue-400 font-bold uppercase truncate max-w-[100px]">{entry.author.split('@')[0]}</span>
-                      </div>
-                    </div>
-                  </div>
+                <option value="">Unassigned</option>
+                {agents.map(a => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
                 ))}
-             </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Update Call Modal */}
-      <AnimatePresence>
-        {showUpdateModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }} 
-              animate={{ opacity: 1 }} 
-              exit={{ opacity: 0 }}
-              onClick={() => setShowUpdateModal(false)}
-              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="bg-white rounded-[32px] shadow-2xl w-full max-w-lg overflow-hidden relative z-10"
-            >
-              <div className="p-8">
-                <h2 className="text-2xl font-black text-gray-900 mb-6">Update After Call</h2>
-                
-                <div className="grid grid-cols-2 gap-4 mb-6">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">New Status</label>
-                    <select 
-                      value={updateForm.status}
-                      onChange={(e) => setUpdateForm(prev => ({ ...prev, status: e.target.value as LeadStatus }))}
-                      className="w-full bg-gray-50 border-none rounded-2xl p-3.5 text-sm font-bold"
-                    >
-                      {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.toUpperCase()}</option>)}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Follow-up</label>
-                    <input 
-                      type="datetime-local"
-                      value={updateForm.nextFollowUp ? new Date(updateForm.nextFollowUp).toISOString().slice(0, 16) : ''}
-                      onChange={(e) => setUpdateForm(prev => ({ ...prev, nextFollowUp: e.target.value }))}
-                      className="w-full bg-gray-50 border-none rounded-2xl p-3.5 text-sm font-bold"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 mb-6">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Budget</label>
-                    <input 
-                      type="text"
-                      value={updateForm.budget}
-                      onChange={(e) => setUpdateForm(prev => ({ ...prev, budget: e.target.value }))}
-                      className="w-full bg-gray-50 border-none rounded-2xl p-3.5 text-sm font-bold"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Type</label>
-                    <select 
-                      value={updateForm.propertyType}
-                      onChange={(e) => setUpdateForm(prev => ({ ...prev, propertyType: e.target.value }))}
-                      className="w-full bg-gray-50 border-none rounded-2xl p-3.5 text-sm font-bold"
-                    >
-                      <option value="Apartment">Apartment</option>
-                      <option value="Villa">Villa</option>
-                      <option value="Studio">Studio</option>
-                      <option value="Commercial">Commercial</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="space-y-1 mb-6">
-                   <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Location / remark</label>
-                   <textarea
-                     rows={3}
-                     value={updateForm.remark}
-                     onChange={(e) => setUpdateForm(prev => ({ ...prev, remark: e.target.value }))}
-                     className="w-full bg-gray-50 border-none rounded-2xl p-3.5 text-sm font-bold resize-none"
-                   />
-                </div>
-
-                <div className="flex gap-3">
-                  <button 
-                    onClick={() => setShowUpdateModal(false)}
-                    className="flex-1 py-4 bg-gray-100 text-gray-400 rounded-2xl font-black uppercase text-xs hover:bg-gray-200 transition-all"
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    onClick={handleApplyCallUpdate}
-                    disabled={updating}
-                    className="flex-2 py-4 bg-blue-600 text-white rounded-2xl font-black uppercase text-xs hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
-                  >
-                    {updating ? "Saving..." : "Save Updates"}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
+              </select>
+              <ChevronDown size={18} className="absolute right-4 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
+            </div>
           </div>
         )}
-      </AnimatePresence>
+
+        <div className="bg-white p-8 rounded-[2rem] border border-neutral-100">
+          <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-400 mb-4 ml-1">Notes Archive</h4>
+          <p className="text-sm font-medium text-neutral-600 whitespace-pre-wrap leading-relaxed">
+            {lead.notes || "No notes yet."}
+          </p>
+        </div>
+      </div>
+
+      <AfterCallModal isOpen={isAfterCallOpen} onClose={() => setIsAfterCallOpen(false)} lead={lead} />
+      
+      <Modal isOpen={isStatusModalOpen} onClose={() => setIsStatusModalOpen(false)} title="Select Lead Status">
+        <div className="space-y-3 pb-8">
+          {statusOptions.map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => updateStatus(opt.value)}
+              className={`w-full py-4 rounded-2xl font-bold transition-all flex items-center justify-between px-6 ${
+                lead.status === opt.value ? 'bg-emerald-500 text-white shadow-lg' : 'bg-neutral-50 text-neutral-600 hover:bg-neutral-100'
+              }`}
+            >
+              {opt.label}
+              {lead.status === opt.value && <CheckCircle2 size={18} />}
+            </button>
+          ))}
+        </div>
+      </Modal>
     </div>
   );
 }
 
-function DetailItem({ icon: Icon, label, value, color }: any) {
+function ContactButton({ icon: Icon, color, href }: any) {
   return (
-    <div className="flex items-start gap-3">
-      <div className={cn("w-8 h-8 rounded-xl bg-gray-50 flex items-center justify-center shrink-0", color)}>
-        <Icon size={16} />
+    <a href={href} target="_blank" rel="noreferrer" className="flex flex-col items-center">
+      <motion.div
+        whileTap={{ scale: 0.9 }}
+        className={`${color} text-white w-12 h-12 rounded-2xl shadow-lg flex items-center justify-center transition-transform`}
+      >
+        <Icon size={20} />
+      </motion.div>
+    </a>
+  );
+}
+
+function InfoRow({ icon: Icon, label, value, color = "text-neutral-900" }: any) {
+  return (
+    <div className="flex items-start gap-4">
+      <div className="p-3 bg-neutral-50 rounded-2xl text-neutral-300">
+        <Icon size={20} />
       </div>
       <div>
-        <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest leading-none mb-1">{label}</p>
-        <p className="text-sm font-bold text-gray-900 break-words">{value}</p>
+        <p className="text-[10px] font-black text-neutral-300 uppercase tracking-widest mb-1">{label}</p>
+        <p className={`font-bold text-sm ${color}`}>{value}</p>
       </div>
     </div>
   );

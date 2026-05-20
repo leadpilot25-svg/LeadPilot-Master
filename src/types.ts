@@ -1,42 +1,39 @@
+
 export type LeadStatus = 'new' | 'contacted' | 'site_visit' | 'meeting' | 'closed' | 'inactive';
 
-export interface LeadNote {
-  text: string;
-  timestamp: string;
-  author: string;
-}
-
 export interface Lead {
-  id?: string;
+  id: string;
   firstName: string;
   lastName?: string;
-  name: string; // Keep for reverse compatibility if needed, but primary is firstName + lastName
   phone: string;
-  whatsapp?: string;
-  source: string;
+  email?: string;
   propertyType: string;
-  budget: string;
+  budget?: string;
   location?: string;
-  status: LeadStatus;
+  source: string;
   assignedTo: string;
-  clientId: string;
-  createdAt: string;
-  lastUpdated: string;
-  nextFollowUp?: string | null; // ISO string with time
-  followUpDate?: string; // Keep for compatibility with existing data
-  notes?: string; 
-  remark?: string; // New field as requested
-  history?: LeadNote[];
+  status: LeadStatus;
+  notes?: string;
+  followUpDate: string;
+  followUpTime: string;
+  createdBy: string;
+  createdAt: any;
 }
 
-export interface Client {
-  id: string;
+export interface UserProfile {
+  uid: string;
   name: string;
-  ownerEmail: string;
-  users: string[];
-  sheetUrl?: string;
+  email: string;
+  role: 'admin' | 'agent';
 }
 
-export interface ClientAnalytics {
-  siteVisits: number;
+export interface Activity {
+  id: string;
+  leadId: string;
+  type: string;
+  date: string;
+  time: string;
+  status: 'pending' | 'completed';
+  createdBy: string;
+  createdAt: any;
 }
