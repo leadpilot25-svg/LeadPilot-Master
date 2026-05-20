@@ -1,0 +1,89 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Global Catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function getClient(clientId) {
+      return get(/databases/$(database)/documents/clients/$(clientId)).data;
+    }
+
+    function isClientMember(clientId) {
+      return isSignedIn() && (
+        request.auth.token.email in getClient(clientId).users ||
+        request.auth.token.email == getClient(clientId).ownerEmail
+      );
+    }
+
+    // --- Collections ---
+
+    match /clients/{clientId} {
+      // Allow public get so the lead form can verify client existence
+      // and the server-side sync can fetch the sheetUrl.
+      // List is still restricted to members.
+      allow get: if isValidId(clientId);
+      
+      allow list: if isSignedIn() && (
+        request.auth.token.email in resource.data.users || 
+        request.auth.token.email == resource.data.ownerEmail
+      );
+      
+      allow create: if isSignedIn() 
+        && request.resource.data.ownerEmail == request.auth.token.email
+        && request.resource.data.users.size() > 0
+        && request.resource.data.users[0] == request.auth.token.email;
+        
+      allow update: if isSignedIn() && resource.data.ownerEmail == request.auth.token.email
+        && request.resource.data.ownerEmail == resource.data.ownerEmail;
+    }
+
+    match /leads/{leadId} {
+      // Public creation for the lead form
+      allow create: if (
+        // Case 1: Public submission
+        (!isSignedIn() && isValidId(request.resource.data.clientId)) ||
+        // Case 2: Agent creation
+        (isSignedIn() && isClientMember(request.resource.data.clientId))
+      ) && isValidLead(request.resource.data);
+
+      allow get: if isClientMember(resource.data.clientId);
+      allow list: if isSignedIn() && isClientMember(request.query.where.clientId);
+
+      allow update: if isClientMember(resource.data.clientId)
+        && isValidLead(request.resource.data)
+        && request.resource.data.clientId == resource.data.clientId;
+        
+      allow delete: if isSignedIn() && (
+        request.auth.token.email == get(/databases/$(database)/documents/clients/$(resource.data.clientId)).data.ownerEmail
+      );
+    }
+
+    match /tracking/{clientId} {
+      allow get: if isClientMember(clientId);
+      // Allow public increment (create/update) but limit the fields
+      allow create, update: if isValidId(clientId) 
+        && request.resource.data.keys().hasOnly(['visits'])
+        && request.resource.data.visits is int;
+    }
+
+    function isValidLead(data) {
+      return data.keys().hasAll(['name', 'phone', 'clientId', 'status', 'createdAt'])
+        && data.name is string && data.name.size() <= 200
+        && data.phone is string && data.phone.size() <= 50
+        && data.status in ['New', 'Contacted', 'Meeting', 'Closed']
+        && isValidId(data.clientId);
+    }
+  }
+}

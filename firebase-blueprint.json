@@ -1,0 +1,51 @@
+{
+  "entities": {
+    "Client": {
+      "title": "Client",
+      "description": "A business client using the CRM system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "users": { "type": "array", "items": { "type": "string" } },
+        "sheetUrl": { "type": "string", "description": "Apps Script Web App URL" }
+      },
+      "required": ["id", "name", "ownerEmail", "users"]
+    },
+    "Lead": {
+      "title": "Lead",
+      "description": "A potential customer lead",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "source": { "type": "string" },
+        "propertyType": { "type": "string" },
+        "budget": { "type": "string" },
+        "status": { "type": "string" },
+        "assignedTo": { "type": "string" },
+        "clientId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastUpdated": { "type": "string", "format": "date-time" },
+        "followUpDate": { "type": "string", "format": "date-time" },
+        "notes": { "type": "string" }
+      },
+      "required": ["name", "phone", "clientId", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/clients/{clientId}": {
+      "schema": "Client",
+      "description": "Business clients"
+    },
+    "/leads/{leadId}": {
+      "schema": "Lead",
+      "description": "Customer leads"
+    },
+    "/tracking/{clientId}": {
+      "schema": "object",
+      "description": "Analytics tracking for clients (e.g. site visits)"
+    }
+  }
+}
